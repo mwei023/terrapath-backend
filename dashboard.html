@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>TerraPath Live Tracker</title>
+
+  <meta charset="utf-8"/>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css"
+  />
+
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+
+    #map {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .info-box {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+
+      background: rgba(0,0,0,0.85);
+      padding: 12px;
+      border-radius: 10px;
+      min-width: 280px;
+    }
+
+    .status {
+      margin-top: 10px;
+      font-weight: bold;
+      font-size: 16px;
+    }
+
+    .inside {
+      color: lime;
+    }
+
+    .outside {
+      color: red;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="info-box">
+
+  <h2>TerraPath Tracker</h2>
+
+  <div id="coords">
+    Waiting for GPS...
+  </div>
+
+  <div id="distance">
+    Distance: --
+  </div>
+
+  <div id="status" class="status">
+    Checking...
+  </div>
+
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+<script>
+
+/////////////////////////////////////////////////////
+// MAP
+/////////////////////////////////////////////////////
+
+const map = L.map("map").setView(
+  [-0.2515, 35.9638],
+  17
+);
+
+L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    attribution: "&copy; OpenStreetMap contributors"
+  }
+).addTo(map);
+
+/////////////////////////////////////////////////////
+// UI
+/////////////////////////////////////////////////////
+
+const coordsDiv =
+  document.getElementById("coords");
+
+const statusDiv =
+  document.getElementById("status");
+
+const distanceDiv =
+  document.getElementById("distance");
+
+/////////////////////////////////////////////////////
+// TRACKER OBJECTS
+/////////////////////////////////////////////////////
+
+let marker = null;
+let trail = [];
+let trailLine = null;
+
+let roadsGeoJSON = null;
+let routeBuffer = null;
+
+/////////////////////////////////////////////////////
+// LOAD ROADS
+/////////////////////////////////////////////////////
+
+fetch("exportroads.geojson")
+.then(res => res.json())
+.then(data => {
+
+    roadsGeoJSON = data;
+
+    L.geoJSON(data,{
+        style:{
+            color:"orange",
+            weight:2
+        }
+    }).addTo(map);
+
+    /////////////////////////////////////////////////////
+    // CREATE 20M BUFFER
+    /////////////////////////////////////////////////////
+
+    const bufferedFeatures = [];
+
+    data.features.forEach(feature => {
+
+        try{
+
+            const buffered =
+              turf.buffer(
+                feature,
+                0.02,
+                {
+                  units:"kilometers"
+                }
+              );
+
+            bufferedFeatures.push(buffered);
+
+        }catch(e){
+
+            console.warn(e);
+
+        }
+
+    });
+
+    routeBuffer = {
+        type:"FeatureCollection",
+        features: bufferedFeatures
+    };
+
+    L.geoJSON(routeBuffer,{
+        style:{
+            color:"lime",
+            fillColor:"lime",
+            fillOpacity:0.15,
+            weight:1
+        }
+    }).addTo(map);
+
+    console.log(
+      "Route buffer loaded"
+    );
+
+})
+.catch(err => {
+
+    console.error(
+      "Road load error:",
+      err
+    );
+
+});
+
+/////////////////////////////////////////////////////
+// DISTANCE TO ROAD
+/////////////////////////////////////////////////////
+
+function getNearestRoadDistance(
+  lat,
+  lng
+){
+
+    if(!roadsGeoJSON){
+        return null;
+    }
+
+    const point =
+      turf.point(
+        [lng, lat]
+      );
+
+    let nearestDistance =
+      Infinity;
+
+    roadsGeoJSON.features.forEach(
+      feature => {
+
+        try{
+
+            const snapped =
+              turf.nearestPointOnLine(
+                feature,
+                point
+              );
+
+            const dist =
+              turf.distance(
+                point,
+                snapped,
+                {
+                  units:"meters"
+                }
+              );
+
+            if(
+              dist <
+              nearestDistance
+            ){
+
+                nearestDistance =
+                  dist;
+
+            }
+
+        }catch(e){}
+
+      }
+    );
+
+    return nearestDistance;
+}
+
+/////////////////////////////////////////////////////
+// GPS LOOP
+/////////////////////////////////////////////////////
+
+async function updateLocation(){
+
+    try{
+
+        const response =
+          await fetch(
+            "http://192.168.100.42:8000/location"
+          );
+
+        const data =
+          await response.json();
+
+        if(
+          !data.lat ||
+          !data.lng
+        ){
+          return;
+        }
+
+        const lat =
+          data.lat;
+
+        const lng =
+          data.lng;
+
+        /////////////////////////////////////////////////////
+        // COORDS
+        /////////////////////////////////////////////////////
+
+        coordsDiv.innerHTML = `
+          <b>Latitude:</b> ${lat}<br>
+          <b>Longitude:</b> ${lng}
+        `;
+
+        /////////////////////////////////////////////////////
+        // MARKER
+        /////////////////////////////////////////////////////
+
+        if(!marker){
+
+            marker =
+              L.marker(
+                [lat,lng]
+              ).addTo(map);
+
+            map.setView(
+              [lat,lng],
+              18
+            );
+
+        }else{
+
+            marker.setLatLng(
+              [lat,lng]
+            );
+
+        }
+
+        /////////////////////////////////////////////////////
+        // FOLLOW GPS
+        /////////////////////////////////////////////////////
+
+        map.panTo(
+          [lat,lng]
+        );
+
+        /////////////////////////////////////////////////////
+        // TRAIL
+        /////////////////////////////////////////////////////
+
+        trail.push(
+          [lat,lng]
+        );
+
+        if(
+          trail.length > 200
+        ){
+          trail.shift();
+        }
+
+        if(
+          trailLine
+        ){
+          map.removeLayer(
+            trailLine
+          );
+        }
+
+        trailLine =
+          L.polyline(
+            trail,
+            {
+              color:"cyan",
+              weight:4
+            }
+          ).addTo(map);
+
+        /////////////////////////////////////////////////////
+        // DISTANCE TO ROAD
+        /////////////////////////////////////////////////////
+
+        const roadDistance =
+          getNearestRoadDistance(
+            lat,
+            lng
+          );
+
+        if(
+          roadDistance !== null
+        ){
+
+            distanceDiv.innerHTML =
+              `<b>Road Distance:</b> ${roadDistance.toFixed(2)} m`;
+
+            /////////////////////////////////////////////////////
+            // ROUTE STATUS
+            /////////////////////////////////////////////////////
+
+            if(
+              roadDistance <= 10
+            ){
+
+                statusDiv.innerHTML =
+                  "ON APPROVED ROUTE";
+
+                statusDiv.className =
+                  "status inside";
+
+            }
+            else if(
+              roadDistance <= 25
+            ){
+
+                statusDiv.innerHTML =
+                  "WARNING: LEAVING ROUTE";
+
+                statusDiv.className =
+                  "status";
+
+            }
+            else{
+
+                statusDiv.innerHTML =
+                  "ROUTE DEVIATION";
+
+                statusDiv.className =
+                  "status outside";
+
+            }
+        }
+
+    }
+    catch(err){
+
+        console.error(
+          "GPS Error:",
+          err
+        );
+
+    }
+}
+
+setInterval(
+  updateLocation,
+  2000
+);
+
+updateLocation();
+
+</script>
+</body>
+</html>

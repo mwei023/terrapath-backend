@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>TerraPath Live Tracker</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css"
+  />
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100%;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+
+const map = L.map('map').setView([-0.251532, 35.963857], 18);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: 'TerraPath GPS Tracker'
+}).addTo(map);
+
+const marker = L.marker([-0.251532, 35.963857]).addTo(map);
+
+async function updateLocation() {
+
+  try {
+
+    const response = await fetch("http://192.168.100.39:8000/location");
+
+    const data = await response.json();
+
+    if (data.lat && data.lng) {
+
+      marker.setLatLng([data.lat, data.lng]);
+
+      map.panTo([data.lat, data.lng]);
+
+      console.log("Updated:", data);
+    }
+
+  } catch (err) {
+
+    console.error(err);
+  }
+}
+
+setInterval(updateLocation, 3000);
+
+</script>
+
+</body>
+</html>
