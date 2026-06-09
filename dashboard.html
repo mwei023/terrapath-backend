@@ -268,11 +268,11 @@ async function updateLocation(){
           await response.json();
 
         if(
-          !data.lat ||
-          !data.lng
-        ){
-          return;
-        }
+          data.lat === undefined ||
+          data.lng === undefined
+          ){
+            return;
+          }
 
         const lat =
           data.lat;
@@ -317,9 +317,11 @@ async function updateLocation(){
         // FOLLOW GPS
         /////////////////////////////////////////////////////
 
-        map.panTo(
-          [lat,lng]
-        );
+        const FOLLOW_MODE = true;
+        
+        if(FOLLOW_MODE){
+          map.panTo([lat,lng]);
+        }
 
         /////////////////////////////////////////////////////
         // TRAIL
@@ -335,22 +337,20 @@ async function updateLocation(){
           trail.shift();
         }
 
-        if(
-          trailLine
-        ){
-          map.removeLayer(
-            trailLine
-          );
-        }
-
-        trailLine =
-          L.polyline(
+        if(!trailLine){
+          
+          trailLine = L.polyline(
             trail,
             {
               color:"cyan",
               weight:4
             }
-          ).addTo(map);
+            ).addTo(map);
+          
+          }else{
+
+            trailLine.setLatLngs(trail);
+          }
 
         /////////////////////////////////////////////////////
         // DISTANCE TO ROAD
