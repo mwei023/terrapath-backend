@@ -79,6 +79,58 @@
 <script>
 
 /////////////////////////////////////////////////////
+// SEND ALERT
+/////////////////////////////////////////////////////
+
+let lastAlertTime = 0;
+
+async function sendAlert(distance, lat, lng)
+{
+    const now = Date.now();
+
+    // prevent spamming alerts every 30 seconds
+    if(now - lastAlertTime < 30000)
+    {
+        return;
+    }
+
+    lastAlertTime = now;
+
+    const alert = {
+        message: "Vehicle left approved route",
+        distance: distance,
+        latitude: lat,
+        longitude: lng
+    };
+
+    try
+    {
+        await fetch(
+          "https://terrapath-backend.onrender.com/alert",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(alert)
+          }
+        );
+
+        console.log(
+          "ALERT SENT",
+          alert
+        );
+    }
+    catch(err)
+    {
+        console.error(
+          "Alert failed:",
+          err
+        );
+    }
+}
+
+/////////////////////////////////////////////////////
 // MAP
 /////////////////////////////////////////////////////
 
@@ -453,6 +505,13 @@ async function updateLocation(){
 
                 statusDiv.className =
                   "status outside";
+
+                // send an alert to the backend (rate-limited)
+                sendAlert(
+                    roadDistance,
+                    lat,
+                    lng
+                );
 
             }
         }
