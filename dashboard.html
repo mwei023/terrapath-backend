@@ -48,6 +48,19 @@
     .outside {
       color: red;
     }
+    .alert-speed {
+      background: rgba(255,0,0,0.08);
+      border-left: 3px solid rgba(255,0,0,0.35);
+      padding: 6px;
+      margin-bottom: 6px;
+    }
+
+    .alert-route {
+      background: rgba(255,165,0,0.04);
+      border-left: 3px solid rgba(255,165,0,0.25);
+      padding: 6px;
+      margin-bottom: 6px;
+    }
     
     /* Alerts panel scrolling */
     #alerts {
@@ -66,12 +79,29 @@
 
   <h2>TerraPath Tracker</h2>
 
+  <div style="margin-bottom:8px">
+    <label style="font-size:14px">
+      Vehicle ID:
+      <input id="vehicleIdInput" placeholder="Vehicle 01" style="width:120px;margin-left:6px" />
+    </label>
+    <br>
+    <label style="font-size:14px">
+      Speed Limit (km/h):
+      <input id="speedLimitInput" type="number" value="40" style="width:72px;margin-left:6px" />
+      <button onclick="setSpeedLimit()" style="margin-left:6px">Set</button>
+    </label>
+  </div>
+
   <div id="coords">
     Waiting for GPS...
   </div>
 
   <div id="distance">
     Distance: --
+  </div>
+
+  <div id="speed">
+    Speed: --
   </div>
 
   <div id="status" class="status">
@@ -84,6 +114,22 @@
 
   <div id="alerts">
     No alerts
+  </div>
+  
+  <hr>
+
+  <h3>Trip Replay</h3>
+
+  <button onclick="startReplay()">
+  ▶ Play
+  </button>
+
+  <button onclick="stopReplay()">
+  ■ Stop
+  </button>
+
+  <div id="replayStatus">
+  Idle
   </div>
 
 </div>
@@ -99,25 +145,28 @@
 // SEND ALERT
 /////////////////////////////////////////////////////
 
-let lastAlertTime = 0;
+// separate cooldowns for route and speed alerts
+let lastRouteAlert = 0;
+let lastSpeedAlert = 0;
 
 async function sendAlert(distance, lat, lng)
 {
     const now = Date.now();
 
-    // prevent spamming alerts every 30 seconds
-    if(now - lastAlertTime < 30000)
+    // prevent spamming route-deviation alerts every 30 seconds
+    if(now - lastRouteAlert < 30000)
     {
         return;
     }
 
-    lastAlertTime = now;
+    lastRouteAlert = now;
 
     const alert = {
-        message: "Vehicle left approved route",
-        distance: distance,
-        latitude: lat,
-        longitude: lng
+      message: "Vehicle left approved route",
+      distance: distance,
+      latitude: lat,
+      longitude: lng,
+      vehicle: (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined
     };
 
     try
@@ -176,6 +225,24 @@ const statusDiv =
 const distanceDiv =
   document.getElementById("distance");
 
+const speedDiv =
+  document.getElementById("speed");
+
+const vehicleIdInput =
+  document.getElementById("vehicleIdInput");
+
+const speedLimitInput =
+  document.getElementById("speedLimitInput");
+
+function setSpeedLimit()
+{
+    const v = parseFloat(speedLimitInput.value);
+    if(!isNaN(v) && v > 0){
+        SPEED_LIMIT = v;
+        console.log("SPEED_LIMIT set to", SPEED_LIMIT);
+    }
+}
+
 const alertsDiv =
   document.getElementById("alerts");
 
@@ -187,6 +254,20 @@ let marker = null;
 let trail = [];
 let trailLine = null;
 let historyLine = null;
+let replayMarker = null;
+let replayIndex = 0;
+let replayTimer = null;
+let historyPoints = [];
+
+let previousPoint = null;
+let previousTime = null;
+let SPEED_LIMIT = 40;
+// event state machine
+let isOverspeeding = false;
+let isOffRoute = false;
+
+let overspeedCount = 0;
+let routeViolationCount = 0;
 
 let roadsGeoJSON = null;
 let routeBuffer = null;
@@ -359,6 +440,9 @@ async function loadHistory()
         e.lng
       ]);
 
+    // expose points to the replay system
+    historyPoints = points;
+
 
     if(historyLine)
     {
@@ -388,6 +472,89 @@ async function loadHistory()
       error
     );
   }
+}
+
+/////////////////////////////////////////////////////
+// TRIP REPLAY
+/////////////////////////////////////////////////////
+
+function startReplay()
+{
+  if(historyPoints.length < 2)
+  {
+    alert(
+      "Not enough trip data"
+    );
+    return;
+  }
+
+
+  stopReplay();
+
+
+  replayIndex = 0;
+
+
+  replayTimer =
+  setInterval(() => {
+
+    const point =
+      historyPoints[replayIndex];
+
+
+    if(!replayMarker)
+    {
+      replayMarker =
+      L.marker(point)
+      .addTo(map);
+    }
+    else
+    {
+      replayMarker
+      .setLatLng(point);
+    }
+
+
+    map.panTo(point);
+
+
+    document
+    .getElementById("replayStatus")
+    .innerHTML =
+    "Replaying " +
+    (replayIndex + 1)
+    + " / " +
+    historyPoints.length;
+
+
+    replayIndex++;
+
+
+    if(replayIndex >= historyPoints.length)
+    {
+      stopReplay();
+    }
+
+
+  }, 500);
+
+
+}
+
+
+function stopReplay()
+{
+  clearInterval(
+    replayTimer
+  );
+
+  replayTimer = null;
+
+
+  document
+  .getElementById("replayStatus")
+  .innerHTML =
+  "Stopped";
 }
 
 /////////////////////////////////////////////////////
@@ -424,19 +591,30 @@ async function updateAlerts()
           .slice()
           .reverse()
           .slice(0,5)
-          .map(a => `
-            <hr>
-            <b>Time:</b>
-            ${a.timestamp}<br>
+          .map(a => {
+              const vehicleHtml = a.vehicle ? `<b>Vehicle:</b> ${a.vehicle}<br>` : "";
 
-            <b>Distance:</b>
-            ${a.distance.toFixed(2)} m<br>
+              if(a.type === 'SPEED' || a.speed){
+                  return `
+                    <div class="alert-speed">
+                      <b>Time:</b> ${a.timestamp}<br>
+                      ${vehicleHtml}
+                      <b>Speed:</b> ${ (a.speed||0).toFixed ? a.speed.toFixed(2) + ' km/h' : a.speed + ' km/h' }<br>
+                      <span style="color:red">${a.message}</span>
+                    </div>
+                  `;
+              }
 
-            <span style="color:red">
-            ${a.message}
-            </span>
-          `)
-          .join("");
+              // fallback: route alert
+              return `
+                <div class="alert-route">
+                  <b>Time:</b> ${a.timestamp}<br>
+                  ${vehicleHtml}
+                  <b>Distance:</b> ${a.distance ? a.distance.toFixed(2) + ' m' : '-'}<br>
+                  <span style="color:orange">${a.message}</span>
+                </div>
+              `;
+          }).join("");
 
     }
     catch(err)
@@ -475,6 +653,83 @@ async function updateLocation(){
           data.lng;
 
         /////////////////////////////////////////////////////
+        // SPEED CALCULATION
+        /////////////////////////////////////////////////////
+
+        const currentTime = new Date();
+
+        if(previousPoint)
+        {
+
+            const distance =
+            turf.distance(
+                turf.point([
+                    previousPoint.lng,
+                    previousPoint.lat
+                ]),
+                turf.point([
+                    lng,
+                    lat
+                ]),
+                {
+                    units:"kilometers"
+                }
+            );
+
+
+            const timeHours =
+            (currentTime - previousTime)
+            / 3600000;
+
+
+            const speed =
+            timeHours > 0 ? distance / timeHours : 0;
+
+
+            // speed display and state transition handling
+            if(speed > SPEED_LIMIT)
+            {
+              // entering overspeed state
+              if(!isOverspeeding)
+              {
+                overspeedCount++;
+
+                sendSpeedAlert(
+                  speed,
+                  lat,
+                  lng
+                );
+
+                isOverspeeding = true;
+              }
+
+              speedDiv.innerHTML =
+              `<span style="color:red">
+              Speed: ${speed.toFixed(2)} km/h ⚠
+              </span>`;
+            }
+            else
+            {
+              // leaving overspeed state
+              isOverspeeding = false;
+
+              speedDiv.innerHTML =
+              `<b>Speed:</b> ${speed.toFixed(2)} km/h`;
+            }
+
+        }
+
+
+        previousPoint = {
+            lat: lat,
+            lng: lng
+        };
+
+
+        previousTime =
+        currentTime;
+
+        /////////////////////////////////////////////////////
         // COORDS
         /////////////////////////////////////////////////////
 
@@ -482,6 +737,60 @@ async function updateLocation(){
           <b>Latitude:</b> ${lat}<br>
           <b>Longitude:</b> ${lng}
         `;
+
+        /////////////////////////////////////////////////////
+        // SPEED VIOLATION ALERT
+        /////////////////////////////////////////////////////
+
+        async function sendSpeedAlert(speed, lat, lng)
+        {
+          const now = Date.now();
+
+          if(now - lastSpeedAlert < 30000)
+          {
+            return;
+          }
+
+          lastSpeedAlert = now;
+
+
+          const alert = {
+            type: "SPEED",
+            message: "Speed limit exceeded",
+            speed: speed,
+            latitude: lat,
+            longitude: lng,
+            vehicle: (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined
+          };
+
+
+          try
+          {
+            await fetch(
+              "https://terrapath-backend.onrender.com/alert",
+              {
+              method: "POST",
+              headers:{
+                "Content-Type":"application/json"
+              },
+              body: JSON.stringify(alert)
+              }
+            );
+
+
+            console.log(
+              "SPEED ALERT SENT",
+              alert
+            );
+          }
+          catch(err)
+          {
+            console.error(
+              "Speed alert failed",
+              err
+            );
+          }
+        }
 
         /////////////////////////////////////////////////////
         // MARKER (snapped to road)
@@ -616,6 +925,9 @@ async function updateLocation(){
               roadDistance <= 10
             ){
 
+                // reset off-route state when returning to approved route
+                isOffRoute = false;
+
                 statusDiv.innerHTML =
                   "ON APPROVED ROUTE";
 
@@ -636,18 +948,26 @@ async function updateLocation(){
             }
             else{
 
+
                 statusDiv.innerHTML =
                   "ROUTE DEVIATION";
 
                 statusDiv.className =
                   "status outside";
 
-                // send an alert to the backend (rate-limited)
-                sendAlert(
-                    roadDistance,
-                    lat,
-                    lng
-                );
+                // only register/send when entering off-route state
+                if(!isOffRoute)
+                {
+                    routeViolationCount++;
+
+                    sendAlert(
+                        roadDistance,
+                        lat,
+                        lng
+                    );
+
+                    isOffRoute = true;
+                }
 
             }
         }

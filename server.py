@@ -6,7 +6,7 @@ from datetime import datetime
 app = FastAPI()
 
 
-latest_location = {}
+vehicles = {}
 
 events = []
 
@@ -24,15 +24,33 @@ app.add_middleware(
 @app.post("/location")
 async def receive_location(data: dict):
 
-    global latest_location
+    vehicle_id = data.get("vehicle")
 
-    data["timestamp"] = str(datetime.now())
+    if not vehicle_id:
+        return {
+            "error": "vehicle ID required"
+        }
 
-    latest_location = data
+    event = {
+        "vehicle": vehicle_id,
+        "lat": data.get("lat"),
+        "lng": data.get("lng"),
+        "speed": data.get("speed"),
+        "bearing": data.get("bearing"),
+        "timestamp": str(datetime.now())
+    }
 
-    events.append(data)
+    # Current position of this vehicle
+    vehicles[vehicle_id] = event
 
-    print("GPS:", data)
+    # Historical record
+    events.append(event)
+
+    print(
+        "GPS:",
+        vehicle_id,
+        event
+    )
 
     return {
         "status": "received"
@@ -41,9 +59,9 @@ async def receive_location(data: dict):
 
 
 @app.get("/location")
-async def get_location():
+async def get_locations():
 
-    return latest_location
+    return vehicles
 
 
 
