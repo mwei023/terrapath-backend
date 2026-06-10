@@ -212,6 +212,7 @@ function getNearestRoadDistance(
 
     let nearestDistance =
       Infinity;
+    let nearestSnapped = null;
 
     roadsGeoJSON.features.forEach(
       feature => {
@@ -240,15 +241,20 @@ function getNearestRoadDistance(
 
                 nearestDistance =
                   dist;
+                // GeoJSON coords are [lng, lat]
+                nearestSnapped = snapped.geometry.coordinates.slice();
 
             }
 
-        }catch(e){}
+        }catch(e){ }
 
       }
     );
 
-    return nearestDistance;
+    return {
+      distance: nearestDistance,
+      snapped: nearestSnapped // [lng, lat] or null
+    };
 }
 
 /////////////////////////////////////////////////////
@@ -290,27 +296,62 @@ async function updateLocation(){
         `;
 
         /////////////////////////////////////////////////////
-        // MARKER
+        // MARKER (snapped to road)
         /////////////////////////////////////////////////////
+
+        // get nearest road and snapped point
+        const roadInfo =
+          getNearestRoadDistance(
+            lat,
+            lng
+          );
+
+        let displayLat = lat;
+        let displayLng = lng;
+
+        if(
+          roadInfo &&
+          roadInfo.snapped
+        ){
+            // snapped is [lng, lat]
+            displayLng = roadInfo.snapped[0];
+            displayLat = roadInfo.snapped[1];
+        }
 
         if(!marker){
 
             marker =
               L.marker(
-                [lat,lng]
+                [displayLat,displayLng]
               ).addTo(map);
 
             map.setView(
-              [lat,lng],
+              [displayLat,displayLng],
               18
             );
 
         }else{
 
             marker.setLatLng(
-              [lat,lng]
+              [displayLat,displayLng]
             );
 
+        }
+
+        /////////////////////////////////////////////////////
+        // Hidden actual GPS marker
+        /////////////////////////////////////////////////////
+
+        if(typeof window.actualMarker === 'undefined'){
+          // keep actual GPS hidden for debugging if needed
+          window.actualMarker = L.circleMarker([lat,lng],{
+            radius: 4,
+            color: '#888',
+            opacity: 0,
+            fillOpacity: 0
+          }).addTo(map);
+        }else{
+          window.actualMarker.setLatLng([lat,lng]);
         }
 
         /////////////////////////////////////////////////////
@@ -324,12 +365,23 @@ async function updateLocation(){
         }
 
         /////////////////////////////////////////////////////
-        // TRAIL
+        // TRAIL (store/display snapped positions)
         /////////////////////////////////////////////////////
 
-        trail.push(
-          [lat,lng]
-        );
+        // push snapped coords if available, otherwise raw
+        if(
+          roadInfo &&
+          roadInfo.snapped
+        ){
+            trail.push([
+              roadInfo.snapped[1],
+              roadInfo.snapped[0]
+            ]);
+        }else{
+            trail.push([
+              lat,lng
+            ]);
+        }
 
         if(
           trail.length > 200
@@ -356,11 +408,10 @@ async function updateLocation(){
         // DISTANCE TO ROAD
         /////////////////////////////////////////////////////
 
+        // use the already-computed `roadInfo` to avoid
+        // calling getNearestRoadDistance twice
         const roadDistance =
-          getNearestRoadDistance(
-            lat,
-            lng
-          );
+          roadInfo ? roadInfo.distance : null;
 
         if(
           roadDistance !== null
