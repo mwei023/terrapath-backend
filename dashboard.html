@@ -48,6 +48,15 @@
     .outside {
       color: red;
     }
+    
+    /* Alerts panel scrolling */
+    #alerts {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-top: 8px;
+      font-size: 14px;
+      padding-right: 6px;
+    }
   </style>
 </head>
 
@@ -67,6 +76,14 @@
 
   <div id="status" class="status">
     Checking...
+  </div>
+
+  <hr>
+
+  <h3>Alerts</h3>
+
+  <div id="alerts">
+    No alerts
   </div>
 
 </div>
@@ -159,6 +176,9 @@ const statusDiv =
 const distanceDiv =
   document.getElementById("distance");
 
+const alertsDiv =
+  document.getElementById("alerts");
+
 /////////////////////////////////////////////////////
 // TRACKER OBJECTS
 /////////////////////////////////////////////////////
@@ -166,6 +186,7 @@ const distanceDiv =
 let marker = null;
 let trail = [];
 let trailLine = null;
+let historyLine = null;
 
 let roadsGeoJSON = null;
 let routeBuffer = null;
@@ -310,8 +331,123 @@ function getNearestRoadDistance(
 }
 
 /////////////////////////////////////////////////////
+// LOAD HISTORY
+/////////////////////////////////////////////////////
+
+async function loadHistory()
+{
+  try
+  {
+    const response =
+      await fetch(
+        "https://terrapath-backend.onrender.com/events"
+      );
+
+    const events =
+      await response.json();
+
+
+    if(events.length < 2)
+    {
+      return;
+    }
+
+
+    const points =
+      events.map(e => [
+        e.lat,
+        e.lng
+      ]);
+
+
+    if(historyLine)
+    {
+      map.removeLayer(
+        historyLine
+      );
+    }
+
+
+    historyLine =
+      L.polyline(
+        points,
+        {
+          color: "yellow",
+          weight: 3,
+          opacity: 0.6
+        }
+      )
+      .addTo(map);
+
+
+  }
+  catch(error)
+  {
+    console.error(
+      "History error:",
+      error
+    );
+  }
+}
+
+/////////////////////////////////////////////////////
 // GPS LOOP
 /////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////
+// LOAD ALERTS
+/////////////////////////////////////////////////////
+
+async function updateAlerts()
+{
+    try
+    {
+        const response =
+          await fetch(
+            "https://terrapath-backend.onrender.com/alerts"
+          );
+
+        const alerts =
+          await response.json();
+
+
+        if(alerts.length === 0)
+        {
+            alertsDiv.innerHTML =
+              "No alerts";
+            return;
+        }
+
+
+        alertsDiv.innerHTML =
+          alerts
+          .slice()
+          .reverse()
+          .slice(0,5)
+          .map(a => `
+            <hr>
+            <b>Time:</b>
+            ${a.timestamp}<br>
+
+            <b>Distance:</b>
+            ${a.distance.toFixed(2)} m<br>
+
+            <span style="color:red">
+            ${a.message}
+            </span>
+          `)
+          .join("");
+
+    }
+    catch(err)
+    {
+        console.error(
+          "Alert load failed:",
+          err
+        );
+    }
+}
+
 
 async function updateLocation(){
 
@@ -533,6 +669,21 @@ setInterval(
 );
 
 updateLocation();
+
+setInterval(
+  updateAlerts,
+  5000
+);
+
+updateAlerts();
+
+// load history once and refresh periodically
+loadHistory();
+
+setInterval(
+    loadHistory,
+    10000
+);
 
 </script>
 </body>
