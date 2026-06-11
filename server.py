@@ -38,7 +38,7 @@ async def receive_location(
             detail="Vehicle ID required"
             )
         
-        expected_key = DEVICE_KEYS.get(vehicle_id)
+    expected_key = DEVICE_KEYS.get(vehicle_id)
         
     if expected_key is None:
         raise HTTPException(
