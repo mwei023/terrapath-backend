@@ -52,11 +52,6 @@ async def receive_location(
             detail="Invalid device key"
             )
 
-    if not vehicle_id:
-        return {
-            "error": "vehicle ID required"
-        }
-
     event = {
         "vehicle": vehicle_id,
         "lat": data.get("lat"),
