@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
@@ -12,6 +12,10 @@ events = []
 
 alerts = []
 
+DEVICE_KEYS = {
+    "TP-0001": "TP_DEV_KEY_001"
+}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,9 +26,31 @@ app.add_middleware(
 
 
 @app.post("/location")
-async def receive_location(data: dict):
+async def receive_location(
+    data: dict,
+    x_device_key: str = Header(None)
+):
 
     vehicle_id = data.get("vehicle")
+    if not vehicle_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle ID required"
+            )
+        
+        expected_key = DEVICE_KEYS.get(vehicle_id)
+        
+    if expected_key is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Unknown device"
+            )
+            
+    if x_device_key != expected_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid device key"
+            )
 
     if not vehicle_id:
         return {

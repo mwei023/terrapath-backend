@@ -61,6 +61,17 @@
       padding: 6px;
       margin-bottom: 6px;
     }
+    .fleet-item {
+      padding:6px 4px;
+      font-size:13px;
+      cursor: default;
+    }
+
+    .fleet-item-selected {
+      background: rgba(0,150,255,0.08);
+      border-left: 3px solid rgba(0,150,255,0.25);
+      padding:6px 4px;
+    }
     
     /* Alerts panel scrolling */
     #alerts {
@@ -96,6 +107,10 @@
     Waiting for GPS...
   </div>
 
+  <div id="selectedVehicle">
+    Vehicle: --
+  </div>
+
   <div id="distance">
     Distance: --
   </div>
@@ -107,6 +122,18 @@
   <div id="status" class="status">
     Checking...
   </div>
+
+  <div id="lastUpdate">
+    Last update: --
+  </div>
+
+  <h3>Fleet Status</h3>
+
+  <div id="fleetList">
+    Loading vehicles...
+  </div>
+
+  <hr>
 
   <hr>
 
@@ -149,7 +176,7 @@
 let lastRouteAlert = 0;
 let lastSpeedAlert = 0;
 
-async function sendAlert(distance, lat, lng)
+async function sendAlert(distance, lat, lng, vehicle)
 {
     const now = Date.now();
 
@@ -166,7 +193,7 @@ async function sendAlert(distance, lat, lng)
       distance: distance,
       latitude: lat,
       longitude: lng,
-      vehicle: (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined
+      vehicle: vehicle || ((vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined)
     };
 
     try
@@ -194,6 +221,56 @@ async function sendAlert(distance, lat, lng)
           err
         );
     }
+}
+
+async function sendSpeedAlert(speed, lat, lng, vehicle)
+{
+  const now = Date.now();
+
+  if(now - lastSpeedAlert < 30000)
+  {
+    return;
+  }
+
+  lastSpeedAlert = now;
+
+
+  const alert = {
+    type: "SPEED",
+    message: "Speed limit exceeded",
+    speed: speed,
+    latitude: lat,
+    longitude: lng,
+    vehicle: vehicle || ((vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined)
+  };
+
+
+  try
+  {
+    await fetch(
+      "https://terrapath-backend.onrender.com/alert",
+      {
+      method: "POST",
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body: JSON.stringify(alert)
+      }
+    );
+
+
+    console.log(
+      "SPEED ALERT SENT",
+      alert
+    );
+  }
+  catch(err)
+  {
+    console.error(
+      "Speed alert failed",
+      err
+    );
+  }
 }
 
 /////////////////////////////////////////////////////
@@ -243,31 +320,43 @@ function setSpeedLimit()
     }
 }
 
+const fleetList =
+  document.getElementById("fleetList");
+
 const alertsDiv =
   document.getElementById("alerts");
+
+const selectedVehicleDiv =
+  document.getElementById("selectedVehicle");
+
+const lastUpdateDiv =
+  document.getElementById("lastUpdate");
 
 /////////////////////////////////////////////////////
 // TRACKER OBJECTS
 /////////////////////////////////////////////////////
 
-let marker = null;
-let trail = [];
-let trailLine = null;
+// per-vehicle map objects for fleet mode
+let vehicleMarkers = {};
+let vehicleTrails = {};
+let vehicleLines = {};
+let vehicleTrailVisible = {};
+
 let historyLine = null;
 let replayMarker = null;
 let replayIndex = 0;
 let replayTimer = null;
 let historyPoints = [];
 
-let previousPoint = null;
-let previousTime = null;
-let SPEED_LIMIT = 40;
-// event state machine
-let isOverspeeding = false;
-let isOffRoute = false;
+// per-vehicle analytics/state
+let previousPoints = {};
+let previousTimes = {};
+let isOverspeedingMap = {};
+let isOffRouteMap = {};
+let overspeedCounts = {};
+let routeViolationCounts = {};
 
-let overspeedCount = 0;
-let routeViolationCount = 0;
+let SPEED_LIMIT = 40;
 
 let roadsGeoJSON = null;
 let routeBuffer = null;
@@ -578,6 +667,12 @@ async function updateAlerts()
           await response.json();
 
 
+        // if a vehicle is selected, show alerts for that vehicle only
+        const selectedVehicleId = (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value.trim() : null;
+        if(selectedVehicleId){
+            alerts = alerts.filter(a => a.vehicle === selectedVehicleId);
+        }
+
         if(alerts.length === 0)
         {
             alertsDiv.innerHTML =
@@ -636,340 +731,206 @@ async function updateLocation(){
             "https://terrapath-backend.onrender.com/location"
           );
 
-        const data =
+        const vehicles =
           await response.json();
 
         if(
-          data.lat === undefined ||
-          data.lng === undefined
-          ){
+          Object.keys(vehicles).length === 0
+        ){
             return;
-          }
+        }
 
-        const lat =
-          data.lat;
+        // fleet UI
+        fleetList.innerHTML = "";
 
-        const lng =
-          data.lng;
+        // determine selected vehicle (from input) or auto-select single vehicle
+        const selectedVehicleId = (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value.trim() : null;
+        const vehicleIds = Object.keys(vehicles);
+        const singleVehicle = vehicleIds.length === 1;
 
-        /////////////////////////////////////////////////////
-        // SPEED CALCULATION
-        /////////////////////////////////////////////////////
-
-        const currentTime = new Date();
-
-        if(previousPoint)
+        for(const id of vehicleIds)
         {
+            const data = vehicles[id];
 
-            const distance =
-            turf.distance(
-                turf.point([
-                    previousPoint.lng,
-                    previousPoint.lat
-                ]),
-                turf.point([
-                    lng,
-                    lat
-                ]),
-                {
-                    units:"kilometers"
+            const lat = data.lat;
+            const lng = data.lng;
+
+            // create fleet list item with select and toggle buttons
+            const item = document.createElement('div');
+            item.className = 'fleet-item';
+
+            const title = document.createElement('div');
+            title.innerHTML = `🚚 <b>${id}</b>`;
+
+            const seen = document.createElement('div');
+            seen.style.fontSize = '12px';
+            seen.style.opacity = '0.9';
+            seen.innerText = `Last seen: ${data.timestamp || ''}`;
+
+            const controls = document.createElement('div');
+            controls.style.marginTop = '4px';
+
+            const selectBtn = document.createElement('button');
+            selectBtn.innerText = 'Select';
+            selectBtn.style.marginRight = '6px';
+            selectBtn.onclick = () => {
+              vehicleIdInput.value = id;
+              // immediately refresh UI for the selected vehicle
+              try{ updateLocation(); }catch(e){}
+              try{ map.panTo([lat,lng]); }catch(e){}
+            };
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.innerText = vehicleTrailVisible[id] === false ? 'Show Trail' : 'Hide Trail';
+            toggleBtn.onclick = () => {
+              // toggle trail visibility
+              if(vehicleLines[id]){
+                if(map.hasLayer(vehicleLines[id])){
+                  map.removeLayer(vehicleLines[id]);
+                  vehicleTrailVisible[id] = false;
+                  toggleBtn.innerText = 'Show Trail';
+                } else {
+                  vehicleLines[id].addTo(map);
+                  vehicleTrailVisible[id] = true;
+                  toggleBtn.innerText = 'Hide Trail';
                 }
-            );
+              }
+            };
 
+            controls.appendChild(selectBtn);
+            controls.appendChild(toggleBtn);
 
-            const timeHours =
-            (currentTime - previousTime)
-            / 3600000;
+            item.appendChild(title);
+            item.appendChild(seen);
+            item.appendChild(controls);
 
+            // mark selected
+            if((selectedVehicleId && selectedVehicleId === id) || (!selectedVehicleId && singleVehicle)){
+              item.classList.add('fleet-item-selected');
+            }
 
-            const speed =
-            timeHours > 0 ? distance / timeHours : 0;
+            fleetList.appendChild(item);
+            const hr = document.createElement('hr');
+            fleetList.appendChild(hr);
 
+            // roadmap snapping
+            const roadInfo = getNearestRoadDistance(lat,lng);
 
-            // speed display and state transition handling
-            if(speed > SPEED_LIMIT)
-            {
-              // entering overspeed state
-              if(!isOverspeeding)
-              {
-                overspeedCount++;
+            let displayLat = lat;
+            let displayLng = lng;
 
-                sendSpeedAlert(
-                  speed,
-                  lat,
-                  lng
+            if(roadInfo && roadInfo.snapped){
+                displayLng = roadInfo.snapped[0];
+                displayLat = roadInfo.snapped[1];
+            }
+
+            // marker
+            if(!vehicleMarkers[id]){
+              vehicleMarkers[id] = L.marker([displayLat, displayLng])
+                .addTo(map)
+                .bindPopup("Vehicle: " + id);
+            } else {
+                vehicleMarkers[id].setLatLng([displayLat, displayLng]);
+            }
+
+            // trail
+            if(!vehicleTrails[id]) vehicleTrails[id] = [];
+
+            if(roadInfo && roadInfo.snapped){
+                vehicleTrails[id].push([roadInfo.snapped[1], roadInfo.snapped[0]]);
+            } else {
+                vehicleTrails[id].push([lat,lng]);
+            }
+
+            if(vehicleTrails[id].length > 200) vehicleTrails[id].shift();
+
+            if(!vehicleLines[id]){
+              vehicleLines[id] = L.polyline(vehicleTrails[id],{color:'cyan', weight:3}).addTo(map);
+              vehicleTrailVisible[id] = true;
+            }else{
+                vehicleLines[id].setLatLngs(vehicleTrails[id]);
+            }
+
+            // speed calculation per vehicle
+            const now = new Date();
+            let speedVal = null;
+
+            if(previousPoints[id]){
+                const distKm = turf.distance(
+                    turf.point([previousPoints[id].lng, previousPoints[id].lat]),
+                    turf.point([lng, lat]),
+                    {units:'kilometers'}
                 );
 
-                isOverspeeding = true;
+                const hours = (now - previousTimes[id]) / 3600000;
+                speedVal = hours > 0 ? distKm / hours : 0;
+
+                // overspeed state machine per vehicle
+                if(speedVal > SPEED_LIMIT){
+                    if(!isOverspeedingMap[id]){
+                        overspeedCounts[id] = (overspeedCounts[id] || 0) + 1;
+                        sendSpeedAlert(speedVal, lat, lng, id);
+                        isOverspeedingMap[id] = true;
+                    }
+                } else {
+                    isOverspeedingMap[id] = false;
+                }
+            }
+
+            previousPoints[id] = {lat: lat, lng: lng};
+            previousTimes[id] = now;
+
+            // update main UI only for selected vehicle (or single auto-selected)
+            const isSelected = (selectedVehicleId && selectedVehicleId === id) || (!selectedVehicleId && singleVehicle);
+
+            if(isSelected){
+              // show selected vehicle header and last update
+              if(selectedVehicleDiv){
+                selectedVehicleDiv.innerHTML = `<b>Vehicle:</b> ${id}`;
               }
-
-              speedDiv.innerHTML =
-              `<span style="color:red">
-              Speed: ${speed.toFixed(2)} km/h ⚠
-              </span>`;
-            }
-            else
-            {
-              // leaving overspeed state
-              isOverspeeding = false;
-
-              speedDiv.innerHTML =
-              `<b>Speed:</b> ${speed.toFixed(2)} km/h`;
-            }
-
-        }
-
-
-        previousPoint = {
-            lat: lat,
-            lng: lng
-        };
-
-
-        previousTime =
-        currentTime;
-
-        /////////////////////////////////////////////////////
-        // COORDS
-        /////////////////////////////////////////////////////
-
-        coordsDiv.innerHTML = `
-          <b>Latitude:</b> ${lat}<br>
-          <b>Longitude:</b> ${lng}
-        `;
-
-        /////////////////////////////////////////////////////
-        // SPEED VIOLATION ALERT
-        /////////////////////////////////////////////////////
-
-        async function sendSpeedAlert(speed, lat, lng)
-        {
-          const now = Date.now();
-
-          if(now - lastSpeedAlert < 30000)
-          {
-            return;
-          }
-
-          lastSpeedAlert = now;
-
-
-          const alert = {
-            type: "SPEED",
-            message: "Speed limit exceeded",
-            speed: speed,
-            latitude: lat,
-            longitude: lng,
-            vehicle: (vehicleIdInput && vehicleIdInput.value) ? vehicleIdInput.value : undefined
-          };
-
-
-          try
-          {
-            await fetch(
-              "https://terrapath-backend.onrender.com/alert",
-              {
-              method: "POST",
-              headers:{
-                "Content-Type":"application/json"
-              },
-              body: JSON.stringify(alert)
+              if(lastUpdateDiv){
+                lastUpdateDiv.innerHTML = `<b>Last update:</b> ${data.timestamp || ''}`;
               }
-            );
+                coordsDiv.innerHTML = `\n                  <b>Latitude:</b> ${lat}<br>\n                  <b>Longitude:</b> ${lng}\n                `;
 
+                distanceDiv.innerHTML = `<b>Road Distance:</b> ${ (roadInfo? roadInfo.distance : 0).toFixed(2)} m`;
 
-            console.log(
-              "SPEED ALERT SENT",
-              alert
-            );
-          }
-          catch(err)
-          {
-            console.error(
-              "Speed alert failed",
-              err
-            );
-          }
-        }
-
-        /////////////////////////////////////////////////////
-        // MARKER (snapped to road)
-        /////////////////////////////////////////////////////
-
-        // get nearest road and snapped point
-        const roadInfo =
-          getNearestRoadDistance(
-            lat,
-            lng
-          );
-
-        let displayLat = lat;
-        let displayLng = lng;
-
-        if(
-          roadInfo &&
-          roadInfo.snapped
-        ){
-            // snapped is [lng, lat]
-            displayLng = roadInfo.snapped[0];
-            displayLat = roadInfo.snapped[1];
-        }
-
-        if(!marker){
-
-            marker =
-              L.marker(
-                [displayLat,displayLng]
-              ).addTo(map);
-
-            map.setView(
-              [displayLat,displayLng],
-              18
-            );
-
-        }else{
-
-            marker.setLatLng(
-              [displayLat,displayLng]
-            );
-
-        }
-
-        /////////////////////////////////////////////////////
-        // Hidden actual GPS marker
-        /////////////////////////////////////////////////////
-
-        if(typeof window.actualMarker === 'undefined'){
-          // keep actual GPS hidden for debugging if needed
-          window.actualMarker = L.circleMarker([lat,lng],{
-            radius: 4,
-            color: '#888',
-            opacity: 0,
-            fillOpacity: 0
-          }).addTo(map);
-        }else{
-          window.actualMarker.setLatLng([lat,lng]);
-        }
-
-        /////////////////////////////////////////////////////
-        // FOLLOW GPS
-        /////////////////////////////////////////////////////
-
-        const FOLLOW_MODE = true;
-        
-        if(FOLLOW_MODE){
-          map.panTo([lat,lng]);
-        }
-
-        /////////////////////////////////////////////////////
-        // TRAIL (store/display snapped positions)
-        /////////////////////////////////////////////////////
-
-        // push snapped coords if available, otherwise raw
-        if(
-          roadInfo &&
-          roadInfo.snapped
-        ){
-            trail.push([
-              roadInfo.snapped[1],
-              roadInfo.snapped[0]
-            ]);
-        }else{
-            trail.push([
-              lat,lng
-            ]);
-        }
-
-        if(
-          trail.length > 200
-        ){
-          trail.shift();
-        }
-
-        if(!trailLine){
-          
-          trailLine = L.polyline(
-            trail,
-            {
-              color:"cyan",
-              weight:4
-            }
-            ).addTo(map);
-          
-          }else{
-
-            trailLine.setLatLngs(trail);
-          }
-
-        /////////////////////////////////////////////////////
-        // DISTANCE TO ROAD
-        /////////////////////////////////////////////////////
-
-        // use the already-computed `roadInfo` to avoid
-        // calling getNearestRoadDistance twice
-        const roadDistance =
-          roadInfo ? roadInfo.distance : null;
-
-        if(
-          roadDistance !== null
-        ){
-
-            distanceDiv.innerHTML =
-              `<b>Road Distance:</b> ${roadDistance.toFixed(2)} m`;
-
-            /////////////////////////////////////////////////////
-            // ROUTE STATUS
-            /////////////////////////////////////////////////////
-
-            if(
-              roadDistance <= 10
-            ){
-
-                // reset off-route state when returning to approved route
-                isOffRoute = false;
-
-                statusDiv.innerHTML =
-                  "ON APPROVED ROUTE";
-
-                statusDiv.className =
-                  "status inside";
-
-            }
-            else if(
-              roadDistance <= 25
-            ){
-
-                statusDiv.innerHTML =
-                  "WARNING: LEAVING ROUTE";
-
-                statusDiv.className =
-                  "status";
-
-            }
-            else{
-
-
-                statusDiv.innerHTML =
-                  "ROUTE DEVIATION";
-
-                statusDiv.className =
-                  "status outside";
-
-                // only register/send when entering off-route state
-                if(!isOffRoute)
-                {
-                    routeViolationCount++;
-
-                    sendAlert(
-                        roadDistance,
-                        lat,
-                        lng
-                    );
-
-                    isOffRoute = true;
+                if(speedVal !== null){
+                    if(speedVal > SPEED_LIMIT){
+                        speedDiv.innerHTML = `<span style="color:red">Speed: ${speedVal.toFixed(2)} km/h ⚠</span>`;
+                    } else {
+                        speedDiv.innerHTML = `<b>Speed:</b> ${speedVal.toFixed(2)} km/h`;
+                    }
                 }
 
+                // route status per vehicle
+                const roadDistance = roadInfo ? roadInfo.distance : null;
+                if(roadDistance !== null){
+                    if(roadDistance <= 10){
+                        isOffRouteMap[id] = false;
+                        statusDiv.innerHTML = "ON APPROVED ROUTE";
+                        statusDiv.className = "status inside";
+                    } else if(roadDistance <= 25){
+                        statusDiv.innerHTML = "WARNING: LEAVING ROUTE";
+                        statusDiv.className = "status";
+                    } else {
+                        statusDiv.innerHTML = "ROUTE DEVIATION";
+                        statusDiv.className = "status outside";
+
+                        if(!isOffRouteMap[id]){
+                            routeViolationCounts[id] = (routeViolationCounts[id] || 0) + 1;
+                            sendAlert(roadDistance, lat, lng, id);
+                            isOffRouteMap[id] = true;
+                        }
+                    }
+                }
+
+                // follow single vehicle if in single mode
+                if(singleVehicle){
+                    map.panTo([lat, lng]);
+                }
             }
+
         }
 
     }
@@ -981,6 +942,7 @@ async function updateLocation(){
         );
 
     }
+
 }
 
 setInterval(
